@@ -33,6 +33,17 @@ def update_format_options(input_path):
     else:
         format_menu['values'] = []
 
+    update_output_name()
+
+
+def update_output_name(*args):
+    input_path = input_entry.get().strip()
+    output_format = format_var.get().strip().lower()
+    if input_path and output_format:
+        base_name = os.path.splitext(os.path.basename(input_path))[0]
+        name_entry.delete(0, tk.END)
+        name_entry.insert(0, base_name)
+
 
 def select_file():
     file_path = filedialog.askopenfilename()
@@ -51,14 +62,16 @@ def drop_file(event):
 
 def convert_file():
     input_path = input_entry.get()
-    output_format = format_var.get()
+    output_format = format_var.get().lower().strip()
+    custom_name = name_entry.get().strip()
+    open_folder = open_var.get()
 
     if not input_path or not output_format:
         messagebox.showerror("Error", "Please select a file and output format.")
         return
 
-    base, _ = os.path.splitext(input_path)
-    output_path = f"{base}.{output_format}"
+    input_dir = os.path.dirname(input_path)
+    output_path = os.path.join(input_dir, f"{custom_name}.{output_format}")
 
     if os.path.exists(output_path):
         overwrite = messagebox.askyesno(
@@ -76,6 +89,8 @@ def convert_file():
             stderr=subprocess.STDOUT
         )
         messagebox.showinfo("Success", f"Converted to:\n{output_path}")
+        if open_folder:
+            os.startfile(input_dir)
     except subprocess.CalledProcessError as e:
         messagebox.showerror("FFmpeg Error", str(e))
 
@@ -97,9 +112,18 @@ tk.Button(frame, text="Browse", command=select_file).grid(row=0, column=2)
 
 tk.Label(frame, text="Convert to:").grid(row=1, column=0, sticky="w", pady=10)
 format_var = tk.StringVar()
+format_var.trace_add("write", update_output_name)
 format_menu = ttk.Combobox(frame, textvariable=format_var)
 format_menu.grid(row=1, column=1, pady=10)
 
-tk.Button(frame, text="Convert", command=convert_file).grid(row=2, column=1, pady=10)
+tk.Label(frame, text="New file name (optional):").grid(row=2, column=0, sticky="w")
+name_entry = tk.Entry(frame, width=50)
+name_entry.grid(row=2, column=1, padx=5)
+
+open_var = tk.BooleanVar(value=True)
+open_checkbox = tk.Checkbutton(frame, text="Open folder after conversion", variable=open_var)
+open_checkbox.grid(row=3, column=1, sticky="w", pady=(5, 10))
+
+tk.Button(frame, text="Convert", command=convert_file).grid(row=4, column=1, pady=10)
 
 root.mainloop()
