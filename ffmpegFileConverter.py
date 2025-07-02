@@ -2,11 +2,15 @@ import tkinter as tk
 from tkinter import filedialog, ttk, messagebox
 from tkinterdnd2 import DND_FILES, TkinterDnD
 import subprocess
+import threading
 import os
+import re
 
 IMAGE_FORMATS = ["png", "jpg", "jpeg", "webp", "bmp", "gif", "tiff"]
 AUDIO_FORMATS = ["mp3", "wav", "ogg", "flac", "aac", "m4a"]
 VIDEO_FORMATS = ["mp4", "avi", "mkv", "mov", "webm", "flv"]
+
+ffmpeg_process = None
 
 
 def get_file_category(ext):
@@ -48,19 +52,53 @@ def update_output_name(*args):
 def select_file():
     file_path = filedialog.askopenfilename()
     if file_path:
+        clean_path = file_path.strip('"')
         input_entry.delete(0, tk.END)
-        input_entry.insert(0, file_path)
-        update_format_options(file_path)
+        input_entry.insert(0, clean_path)
+        update_format_options(clean_path)
 
 
 def drop_file(event):
-    path = event.data.strip('{}')
+    clean_path = event.data.strip('"')
     input_entry.delete(0, tk.END)
-    input_entry.insert(0, path)
-    update_format_options(path)
+    input_entry.insert(0, clean_path)
+    update_format_options(clean_path)
+
+
+def cancel_conversion():
+    global ffmpeg_process
+    if ffmpeg_process and ffmpeg_process.poll() is None:
+        ffmpeg_process.terminate()
+        progress_label.config(text="Conversion canceled.")
+        progress_bar["value"] = 0
+        convert_button["state"] = "normal"
+        cancel_button["state"] = "disabled"
+
+
+def get_duration(path):
+    try:
+        result = subprocess.run(
+            ["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "default=noprint_wrappers=1:nokey=1",
+             path],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True
+        )
+        return float(result.stdout.strip())
+    except:
+        return None
+
+
+def format_duration(seconds):
+    h = int(seconds // 3600)
+    m = int((seconds % 3600) // 60)
+    s = seconds % 60
+    return f"{h:02}:{m:02}:{s:05.2f}"
 
 
 def convert_file():
+    global ffmpeg_process
+
     input_path = input_entry.get()
     output_format = format_var.get().lower().strip()
     custom_name = name_entry.get().strip()
@@ -81,18 +119,90 @@ def convert_file():
         if not overwrite:
             return
 
-    try:
-        subprocess.run(
-            ["ffmpeg", "-y", "-i", input_path, output_path],
-            check=True,
+    duration = get_duration(input_path)
+    if not duration:
+        duration = 0
+
+    def run_ffmpeg():
+        global ffmpeg_process
+        progress_bar["value"] = 0
+        progress_label.config(text="Converting...")
+
+        # Show progress UI
+        progress_bar.grid(row=5, column=1, pady=10)
+        progress_label.grid(row=6, column=1)
+
+        convert_button["state"] = "disabled"
+        cancel_button["state"] = "normal"
+
+        cmd = ["ffmpeg", "-y", "-i", input_path]
+
+        if output_format in AUDIO_FORMATS:
+            cmd += ["-vn"]
+
+        cmd.append(output_path)
+        ffmpeg_process = subprocess.Popen(
+            cmd,
+            stderr=subprocess.PIPE,
             stdout=subprocess.DEVNULL,
-            stderr=subprocess.STDOUT
+            universal_newlines=True,
+            bufsize=1
         )
-        messagebox.showinfo("Success", f"Converted to:\n{output_path}")
-        if open_folder:
-            os.startfile(input_dir)
-    except subprocess.CalledProcessError as e:
-        messagebox.showerror("FFmpeg Error", str(e))
+
+        time_pattern = re.compile(r"time=(\d{2}:\d{2}:\d{2}\.\d{2})")
+        speed_pattern = re.compile(r"speed=\s*([\d.]+)x")
+
+        def read_progress():
+            while True:
+                line = ffmpeg_process.stderr.readline()
+                if not line:
+                    break
+
+                # Sometimes ffmpeg outputs progress on same line with \r
+                if '\r' in line:
+                    line = line.split('\r')[-1]
+
+                time_match = time_pattern.search(line)
+                speed_match = speed_pattern.search(line)
+
+                current_time_str = time_match.group(1) if time_match else ""
+                speed_str = speed_match.group(1) if speed_match else ""
+
+                if current_time_str and duration:
+                    h, m, s = current_time_str.split(":")
+                    current_secs = int(h) * 3600 + int(m) * 60 + float(s)
+                    percent = (current_secs / duration) * 100
+                    progress_bar["value"] = percent
+
+                if current_time_str:
+                    label = f"Converting... {current_time_str} / {format_duration(duration)}"
+                    if speed_str:
+                        label += f"  |  speed: {speed_str}x"
+                    else:
+                        label += "  |  speed: N/A"
+                    progress_label.config(text=label)
+
+            ffmpeg_process.wait()
+            if ffmpeg_process.returncode == 0:
+                progress_bar["value"] = 100
+                progress_label.config(text="Conversion complete.")
+                if open_folder:
+                    os.startfile(input_dir)
+            elif ffmpeg_process.returncode == -15:
+                progress_label.config(text="Conversion canceled.")
+            else:
+                progress_label.config(text="Conversion failed.")
+                messagebox.showerror("FFmpeg Error", "Conversion failed.")
+
+            # Hide progress UI
+            progress_bar.grid_remove()
+            progress_label.grid_remove()
+            convert_button["state"] = "normal"
+            cancel_button["state"] = "disabled"
+
+        threading.Thread(target=read_progress).start()
+
+    threading.Thread(target=run_ffmpeg).start()
 
 
 # GUI setup
@@ -124,6 +234,16 @@ open_var = tk.BooleanVar(value=True)
 open_checkbox = tk.Checkbutton(frame, text="Open folder after conversion", variable=open_var)
 open_checkbox.grid(row=3, column=1, sticky="w", pady=(5, 10))
 
-tk.Button(frame, text="Convert", command=convert_file).grid(row=4, column=1, pady=10)
+convert_button = tk.Button(frame, text="Convert", command=convert_file)
+convert_button.grid(row=4, column=1, pady=5)
+
+cancel_button = tk.Button(frame, text="Cancel", command=cancel_conversion, state="disabled")
+cancel_button.grid(row=4, column=2, pady=5)
+
+progress_bar = ttk.Progressbar(frame, orient="horizontal", length=400, mode="determinate")
+# progress_bar.grid(row=5, column=1, pady=10)
+
+progress_label = tk.Label(frame, text="")
+# progress_label.grid(row=6, column=1)
 
 root.mainloop()
