@@ -11,6 +11,7 @@ AUDIO_FORMATS = ["mp3", "wav", "ogg", "flac", "aac", "m4a"]
 VIDEO_FORMATS = ["mp4", "avi", "mkv", "mov", "webm", "flv"]
 
 ffmpeg_process = None
+CREATE_NO_WINDOW = 0x08000000
 
 
 def get_file_category(ext):
@@ -146,7 +147,7 @@ def convert_file():
             stderr=subprocess.PIPE,
             stdout=subprocess.DEVNULL,
             universal_newlines=True,
-            bufsize=1
+            creationflags=CREATE_NO_WINDOW  # suppresses console window
         )
 
         time_pattern = re.compile(r"time=(\d{2}:\d{2}:\d{2}\.\d{2})")
